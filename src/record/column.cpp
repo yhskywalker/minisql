@@ -35,26 +35,79 @@ Column::Column(const Column *other)
       nullable_(other->nullable_),
       unique_(other->unique_) {}
 
-/**
-* TODO: Student Implement
-*/
 uint32_t Column::SerializeTo(char *buf) const {
-  // replace with your code here
-  return 0;
+  char *start = buf;
+  // magic number
+  MACH_WRITE_UINT32(buf, COLUMN_MAGIC_NUM);
+  buf += 4;
+  // column name (length-prefixed string)
+  uint32_t name_len = name_.length();
+  MACH_WRITE_UINT32(buf, name_len);
+  buf += 4;
+  MACH_WRITE_STRING(buf, name_);
+  buf += name_len;
+  // type
+  MACH_WRITE_TO(uint32_t, buf, static_cast<uint32_t>(type_));
+  buf += 4;
+  // length (for CHAR, this is the max byte length; for int/float, it's the fixed size)
+  MACH_WRITE_UINT32(buf, len_);
+  buf += 4;
+  // table index (column position in table)
+  MACH_WRITE_UINT32(buf, table_ind_);
+  buf += 4;
+  // nullable flag
+  MACH_WRITE_TO(bool, buf, nullable_);
+  buf += 1;
+  // unique flag
+  MACH_WRITE_TO(bool, buf, unique_);
+  buf += 1;
+  return buf - start;
 }
 
-/**
- * TODO: Student Implement
- */
 uint32_t Column::GetSerializedSize() const {
-  // replace with your code here
-  return 0;
+  return 4                          // magic number
+       + MACH_STR_SERIALIZED_SIZE(name_)  // 4 + name_.length()
+       + 4                          // type_
+       + 4                          // len_
+       + 4                          // table_ind_
+       + 1                          // nullable_
+       + 1;                         // unique_
 }
 
 /**
  * TODO: Student Implement
  */
 uint32_t Column::DeserializeFrom(char *buf, Column *&column) {
-  // replace with your code here
-  return 0;
+  char *start = buf;
+  // magic number
+  uint32_t magic_num = MACH_READ_UINT32(buf);
+  buf += 4;
+  ASSERT(magic_num == COLUMN_MAGIC_NUM, "Failed to deserialize column.");
+  // column name
+  uint32_t name_len = MACH_READ_UINT32(buf);
+  buf += 4;
+  std::string column_name(buf, name_len);
+  buf += name_len;
+  // type
+  auto type = static_cast<TypeId>(MACH_READ_UINT32(buf));
+  buf += 4;
+  // length
+  uint32_t len = MACH_READ_UINT32(buf);
+  buf += 4;
+  // table index
+  uint32_t table_ind = MACH_READ_UINT32(buf);
+  buf += 4;
+  // nullable
+  bool nullable = MACH_READ_FROM(bool, buf);
+  buf += 1;
+  // unique
+  bool unique = MACH_READ_FROM(bool, buf);
+  buf += 1;
+  // Use the appropriate constructor: CHAR types need explicit length
+  if (type == kTypeChar) {
+    column = new Column(column_name, type, len, table_ind, nullable, unique);
+  } else {
+    column = new Column(column_name, type, table_ind, nullable, unique);
+  }
+  return buf - start;
 }
