@@ -5,6 +5,9 @@
 #include <sys/types.h>
 
 #include <chrono>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 #include "common/result_writer.h"
 #include "executor/executors/delete_executor.h"
@@ -21,7 +24,11 @@ ExecuteEngine::ExecuteEngine() {
   char path[] = "./databases";
   DIR *dir;
   if ((dir = opendir(path)) == nullptr) {
+#ifdef _WIN32
+    _mkdir("./databases");
+#else
     mkdir("./databases", 0777);
+#endif
     dir = opendir(path);
   }
   /** When you have completed all the code for
@@ -320,7 +327,7 @@ dberr_t ExecuteEngine::ExecuteShowTables(pSyntaxNode ast, ExecuteContext *contex
     return DB_FAILED;
   }
   string table_in_db("Tables_in_" + current_db_);
-  uint max_width = table_in_db.length();
+  size_t max_width = table_in_db.length();
   for (const auto &itr : tables) {
     if (itr->GetTableName().length() > max_width) max_width = itr->GetTableName().length();
   }
