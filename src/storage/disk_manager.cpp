@@ -51,29 +51,92 @@ void DiskManager::WritePage(page_id_t logical_page_id, const char *page_data) {
  * TODO: Student Implement
  */
 page_id_t DiskManager::AllocatePage() {
-  ASSERT(false, "Not implemented yet.");
-  return INVALID_PAGE_ID;
+  std::scoped_lock<std::recursive_mutex> lock(db_io_latch_);
+  auto *meta_page = reinterpret_cast<DiskFileMetaPage *>(meta_data_);
+  if (meta_page->num_allocated_pages_ >= MAX_VALID_PAGE_ID) {
+    return INVALID_PAGE_ID;
+  }
+
+  for (uint32_t extent_id = 0; extent_id < meta_page->num_extents_; extent_id++) {
+    if (meta_page->extent_used_page_[extent_id] >= BITMAP_SIZE) {
+      continue;
+    }
+    char bitmap_data[PAGE_SIZE];
+    ReadPhysicalPage(1 + extent_id * (BITMAP_SIZE + 1), bitmap_data);
+    auto *bitmap_page = reinterpret_cast<BitmapPage<PAGE_SIZE> *>(bitmap_data);
+    uint32_t page_offset;
+    if (bitmap_page->AllocatePage(page_offset)) {
+      meta_page->num_allocated_pages_++;
+      meta_page->extent_used_page_[extent_id]++;
+      WritePhysicalPage(1 + extent_id * (BITMAP_SIZE + 1), bitmap_data);
+      WritePhysicalPage(META_PAGE_ID, meta_data_);
+      return static_cast<page_id_t>(extent_id * BITMAP_SIZE + page_offset);
+    }
+  }
+
+  uint32_t extent_id = meta_page->num_extents_;
+  ASSERT(extent_id < (PAGE_SIZE - 2 * sizeof(uint32_t)) / sizeof(uint32_t), "Too many extents.");
+  char bitmap_data[PAGE_SIZE];
+  memset(bitmap_data, 0, PAGE_SIZE);
+  auto *bitmap_page = reinterpret_cast<BitmapPage<PAGE_SIZE> *>(bitmap_data);
+  uint32_t page_offset;
+  ASSERT(bitmap_page->AllocatePage(page_offset), "Failed to allocate page from new bitmap page.");
+  meta_page->num_extents_++;
+  meta_page->num_allocated_pages_++;
+  meta_page->extent_used_page_[extent_id] = 1;
+  WritePhysicalPage(1 + extent_id * (BITMAP_SIZE + 1), bitmap_data);
+  WritePhysicalPage(META_PAGE_ID, meta_data_);
+  return static_cast<page_id_t>(extent_id * BITMAP_SIZE + page_offset);
 }
 
 /**
  * TODO: Student Implement
  */
 void DiskManager::DeAllocatePage(page_id_t logical_page_id) {
-  ASSERT(false, "Not implemented yet.");
+  ASSERT(logical_page_id >= 0, "Invalid page id.");
+  std::scoped_lock<std::recursive_mutex> lock(db_io_latch_);
+  uint32_t extent_id = static_cast<uint32_t>(logical_page_id) / BITMAP_SIZE;
+  uint32_t page_offset = static_cast<uint32_t>(logical_page_id) % BITMAP_SIZE;
+  auto *meta_page = reinterpret_cast<DiskFileMetaPage *>(meta_data_);
+  if (extent_id >= meta_page->num_extents_) {
+    return;
+  }
+
+  char bitmap_data[PAGE_SIZE];
+  ReadPhysicalPage(1 + extent_id * (BITMAP_SIZE + 1), bitmap_data);
+  auto *bitmap_page = reinterpret_cast<BitmapPage<PAGE_SIZE> *>(bitmap_data);
+  if (bitmap_page->DeAllocatePage(page_offset)) {
+    meta_page->num_allocated_pages_--;
+    meta_page->extent_used_page_[extent_id]--;
+    WritePhysicalPage(1 + extent_id * (BITMAP_SIZE + 1), bitmap_data);
+    WritePhysicalPage(META_PAGE_ID, meta_data_);
+  }
 }
 
 /**
  * TODO: Student Implement
  */
 bool DiskManager::IsPageFree(page_id_t logical_page_id) {
-  return false;
+  ASSERT(logical_page_id >= 0, "Invalid page id.");
+  std::scoped_lock<std::recursive_mutex> lock(db_io_latch_);
+  uint32_t extent_id = static_cast<uint32_t>(logical_page_id) / BITMAP_SIZE;
+  uint32_t page_offset = static_cast<uint32_t>(logical_page_id) % BITMAP_SIZE;
+  auto *meta_page = reinterpret_cast<DiskFileMetaPage *>(meta_data_);
+  if (extent_id >= meta_page->num_extents_) {
+    return true;
+  }
+  char bitmap_data[PAGE_SIZE];
+  ReadPhysicalPage(1 + extent_id * (BITMAP_SIZE + 1), bitmap_data);
+  auto *bitmap_page = reinterpret_cast<BitmapPage<PAGE_SIZE> *>(bitmap_data);
+  return bitmap_page->IsPageFree(page_offset);
 }
 
 /**
  * TODO: Student Implement
  */
 page_id_t DiskManager::MapPageId(page_id_t logical_page_id) {
-  return 0;
+  ASSERT(logical_page_id >= 0, "Invalid page id.");
+  return 2 + logical_page_id + logical_page_id / BITMAP_SIZE;
 }
 
 int DiskManager::GetFileSize(const std::string &file_name) {
@@ -83,31 +146,24 @@ int DiskManager::GetFileSize(const std::string &file_name) {
 }
 
 void DiskManager::ReadPhysicalPage(page_id_t physical_page_id, char *page_data) {
-  int offset = physical_page_id * PAGE_SIZE;
-  // check if read beyond file length
-  if (offset >= GetFileSize(file_name_)) {
+  size_t offset = static_cast<size_t>(physical_page_id) * PAGE_SIZE;
+  db_io_.clear();
+  db_io_.seekg(offset);
+  db_io_.read(page_data, PAGE_SIZE);
+  // if file ends before reading PAGE_SIZE
+  int read_count = db_io_.gcount();
+  if (read_count < PAGE_SIZE) {
 #ifdef ENABLE_BPM_DEBUG
     LOG(INFO) << "Read less than a page" << std::endl;
 #endif
-    memset(page_data, 0, PAGE_SIZE);
-  } else {
-    // set read cursor to offset
-    db_io_.seekp(offset);
-    db_io_.read(page_data, PAGE_SIZE);
-    // if file ends before reading PAGE_SIZE
-    int read_count = db_io_.gcount();
-    if (read_count < PAGE_SIZE) {
-#ifdef ENABLE_BPM_DEBUG
-      LOG(INFO) << "Read less than a page" << std::endl;
-#endif
-      memset(page_data + read_count, 0, PAGE_SIZE - read_count);
-    }
+    memset(page_data + read_count, 0, PAGE_SIZE - read_count);
   }
 }
 
 void DiskManager::WritePhysicalPage(page_id_t physical_page_id, const char *page_data) {
   size_t offset = static_cast<size_t>(physical_page_id) * PAGE_SIZE;
   // set write cursor to offset
+  db_io_.clear();
   db_io_.seekp(offset);
   db_io_.write(page_data, PAGE_SIZE);
   // check for I/O error
