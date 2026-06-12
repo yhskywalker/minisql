@@ -5,6 +5,10 @@
 #include <sys/types.h>
 
 #include <chrono>
+#include <cstring>
+#include <fstream>
+#include <set>
+#include <sstream>
 #ifdef _WIN32
 #include <direct.h>
 #endif
@@ -20,6 +24,105 @@
 #include "planner/planner.h"
 #include "utils/utils.h"
 
+extern "C" {
+int yyparse(void);
+#include "parser/minisql_lex.h"
+#include "parser/parser.h"
+}
+
+namespace {
+
+constexpr uint32_t CATALOG_METADATA_MAGIC_NUM = 89849;
+
+bool NeedCurrentDatabase(const std::string &current_db) {
+  if (current_db.empty()) {
+    std::cout << "No database selected" << std::endl;
+    return true;
+  }
+  return false;
+}
+
+std::string NodeValue(pSyntaxNode node) {
+  return node != nullptr && node->val_ != nullptr ? node->val_ : "";
+}
+
+std::vector<std::string> ParseColumnList(pSyntaxNode node) {
+  std::vector<std::string> columns;
+  if (node == nullptr) {
+    return columns;
+  }
+  auto child = node->type_ == kNodeColumnList ? node->child_ : node;
+  while (child != nullptr) {
+    if (child->type_ == kNodeIdentifier) {
+      columns.emplace_back(NodeValue(child));
+    }
+    child = child->next_;
+  }
+  return columns;
+}
+
+TypeId ParseColumnType(pSyntaxNode type_node, uint32_t &length) {
+  auto type_name = NodeValue(type_node);
+  if (type_name == "int") {
+    length = sizeof(int32_t);
+    return TypeId::kTypeInt;
+  }
+  if (type_name == "float") {
+    length = sizeof(float);
+    return TypeId::kTypeFloat;
+  }
+  if (type_name == "char") {
+    length = static_cast<uint32_t>(std::stoi(NodeValue(type_node->child_)));
+    return TypeId::kTypeChar;
+  }
+  throw std::logic_error("Unsupported column type.");
+}
+
+void PrintSingleColumnTable(const std::string &header, const std::vector<std::string> &values) {
+  if (values.empty()) {
+    std::cout << "Empty set (0.00 sec)" << std::endl;
+    return;
+  }
+  size_t max_width = header.length();
+  for (const auto &value : values) {
+    max_width = std::max(max_width, value.length());
+  }
+  std::cout << "+" << std::setfill('-') << std::setw(static_cast<int>(max_width + 2)) << "" << "+" << std::endl;
+  std::cout << "| " << std::left << std::setfill(' ') << std::setw(static_cast<int>(max_width)) << header << " |"
+            << std::endl;
+  std::cout << "+" << std::setfill('-') << std::setw(static_cast<int>(max_width + 2)) << "" << "+" << std::endl;
+  for (const auto &value : values) {
+    std::cout << "| " << std::left << std::setfill(' ') << std::setw(static_cast<int>(max_width)) << value << " |"
+              << std::endl;
+  }
+  std::cout << "+" << std::setfill('-') << std::setw(static_cast<int>(max_width + 2)) << "" << "+" << std::endl;
+}
+
+bool IsCatalogDatabaseFile(const std::string &path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file.is_open()) {
+    return false;
+  }
+  DiskFileMetaPage meta_page{};
+  file.read(reinterpret_cast<char *>(&meta_page), sizeof(meta_page));
+  if (file.gcount() < static_cast<std::streamsize>(sizeof(uint32_t) * 2)) {
+    return false;
+  }
+  if (meta_page.num_extents_ == 0 || meta_page.extent_used_page_[0] < 2) {
+    return false;
+  }
+  char catalog_page[PAGE_SIZE];
+  file.clear();
+  file.seekg(static_cast<std::streamoff>(2 * PAGE_SIZE));
+  file.read(catalog_page, PAGE_SIZE);
+  if (file.gcount() < static_cast<std::streamsize>(sizeof(uint32_t))) {
+    return false;
+  }
+  return MACH_READ_UINT32(catalog_page) == CATALOG_METADATA_MAGIC_NUM;
+}
+
+}  // namespace
+
 ExecuteEngine::ExecuteEngine() {
   char path[] = "./databases";
   DIR *dir;
@@ -31,18 +134,23 @@ ExecuteEngine::ExecuteEngine() {
 #endif
     dir = opendir(path);
   }
-  /** When you have completed all the code for
-   *  the test, run it using main.cpp and uncomment
-   *  this part of the code.
   struct dirent *stdir;
   while((stdir = readdir(dir)) != nullptr) {
     if( strcmp( stdir->d_name , "." ) == 0 ||
         strcmp( stdir->d_name , "..") == 0 ||
         stdir->d_name[0] == '.')
       continue;
-    dbs_[stdir->d_name] = new DBStorageEngine(stdir->d_name, false);
+    std::string db_name = stdir->d_name;
+    std::string db_path = std::string(path) + "/" + db_name;
+    if (!IsCatalogDatabaseFile(db_path)) {
+      continue;
+    }
+    try {
+      dbs_[db_name] = new DBStorageEngine(db_name, false);
+    } catch (const std::exception &ex) {
+      LOG(WARNING) << "Skip invalid database file " << db_name << ": " << ex.what() << std::endl;
+    }
   }
-   **/
   closedir(dir);
 }
 
@@ -351,7 +459,72 @@ dberr_t ExecuteEngine::ExecuteCreateTable(pSyntaxNode ast, ExecuteContext *conte
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteCreateTable" << std::endl;
 #endif
-  return DB_FAILED;
+  if (NeedCurrentDatabase(current_db_)) {
+    return DB_FAILED;
+  }
+  auto table_name_node = ast->child_;
+  auto definitions_node = table_name_node == nullptr ? nullptr : table_name_node->next_;
+  if (table_name_node == nullptr || definitions_node == nullptr) {
+    return DB_FAILED;
+  }
+
+  std::set<std::string> primary_keys;
+  for (auto def = definitions_node->child_; def != nullptr; def = def->next_) {
+    if (def->type_ == kNodeColumnList) {
+      for (auto &key : ParseColumnList(def)) {
+        primary_keys.insert(key);
+      }
+    }
+  }
+
+  std::vector<Column *> columns;
+  std::vector<std::string> auto_index_columns;
+  uint32_t index = 0;
+  try {
+    for (auto def = definitions_node->child_; def != nullptr; def = def->next_) {
+      if (def->type_ != kNodeColumnDefinition) {
+        continue;
+      }
+      auto name_node = def->child_;
+      auto type_node = name_node == nullptr ? nullptr : name_node->next_;
+      if (name_node == nullptr || type_node == nullptr) {
+        throw std::logic_error("Invalid column definition.");
+      }
+      auto column_name = NodeValue(name_node);
+      uint32_t length = 0;
+      auto type = ParseColumnType(type_node, length);
+      bool unique = def->val_ != nullptr || primary_keys.find(column_name) != primary_keys.end();
+      if (type == TypeId::kTypeChar) {
+        columns.emplace_back(new Column(column_name, type, length, index, false, unique));
+      } else {
+        columns.emplace_back(new Column(column_name, type, index, false, unique));
+      }
+      if (unique) {
+        auto_index_columns.emplace_back(column_name);
+      }
+      index++;
+    }
+  } catch (const std::exception &ex) {
+    for (auto column : columns) {
+      delete column;
+    }
+    std::cout << ex.what() << std::endl;
+    return DB_FAILED;
+  }
+
+  auto schema = std::make_unique<Schema>(columns);
+  TableInfo *table_info = nullptr;
+  auto result = dbs_[current_db_]->catalog_mgr_->CreateTable(NodeValue(table_name_node), schema.get(), nullptr, table_info);
+  if (result != DB_SUCCESS) {
+    return result;
+  }
+  for (const auto &column_name : auto_index_columns) {
+    IndexInfo *index_info = nullptr;
+    std::string index_name = "__auto_" + NodeValue(table_name_node) + "_" + column_name;
+    dbs_[current_db_]->catalog_mgr_->CreateIndex(NodeValue(table_name_node), index_name, {column_name}, nullptr,
+                                                 index_info, "bptree");
+  }
+  return DB_SUCCESS;
 }
 
 /**
@@ -361,7 +534,10 @@ dberr_t ExecuteEngine::ExecuteDropTable(pSyntaxNode ast, ExecuteContext *context
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteDropTable" << std::endl;
 #endif
- return DB_FAILED;
+  if (NeedCurrentDatabase(current_db_)) {
+    return DB_FAILED;
+  }
+  return dbs_[current_db_]->catalog_mgr_->DropTable(NodeValue(ast->child_));
 }
 
 /**
@@ -371,7 +547,35 @@ dberr_t ExecuteEngine::ExecuteShowIndexes(pSyntaxNode ast, ExecuteContext *conte
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteShowIndexes" << std::endl;
 #endif
-  return DB_FAILED;
+  if (NeedCurrentDatabase(current_db_)) {
+    return DB_FAILED;
+  }
+  std::vector<TableInfo *> tables;
+  auto result = dbs_[current_db_]->catalog_mgr_->GetTables(tables);
+  if (result != DB_SUCCESS) {
+    return result;
+  }
+  std::vector<std::string> index_rows;
+  for (auto table : tables) {
+    std::vector<IndexInfo *> indexes;
+    dbs_[current_db_]->catalog_mgr_->GetTableIndexes(table->GetTableName(), indexes);
+    for (auto index : indexes) {
+      std::stringstream ss;
+      ss << table->GetTableName() << "." << index->GetIndexName() << " (";
+      bool first = true;
+      for (auto column : index->GetIndexKeySchema()->GetColumns()) {
+        if (!first) {
+          ss << ", ";
+        }
+        ss << column->GetName();
+        first = false;
+      }
+      ss << ")";
+      index_rows.emplace_back(ss.str());
+    }
+  }
+  PrintSingleColumnTable("Indexes_in_" + current_db_, index_rows);
+  return DB_SUCCESS;
 }
 
 /**
@@ -381,7 +585,23 @@ dberr_t ExecuteEngine::ExecuteCreateIndex(pSyntaxNode ast, ExecuteContext *conte
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteCreateIndex" << std::endl;
 #endif
-  return DB_FAILED;
+  if (NeedCurrentDatabase(current_db_)) {
+    return DB_FAILED;
+  }
+  auto index_name_node = ast->child_;
+  auto table_name_node = index_name_node == nullptr ? nullptr : index_name_node->next_;
+  auto keys_node = table_name_node == nullptr ? nullptr : table_name_node->next_;
+  auto type_node = keys_node == nullptr ? nullptr : keys_node->next_;
+  if (index_name_node == nullptr || table_name_node == nullptr || keys_node == nullptr) {
+    return DB_FAILED;
+  }
+  std::string index_type = "bptree";
+  if (type_node != nullptr && type_node->child_ != nullptr) {
+    index_type = NodeValue(type_node->child_);
+  }
+  IndexInfo *index_info = nullptr;
+  return dbs_[current_db_]->catalog_mgr_->CreateIndex(NodeValue(table_name_node), NodeValue(index_name_node),
+                                                      ParseColumnList(keys_node), nullptr, index_info, index_type);
 }
 
 /**
@@ -391,28 +611,46 @@ dberr_t ExecuteEngine::ExecuteDropIndex(pSyntaxNode ast, ExecuteContext *context
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteDropIndex" << std::endl;
 #endif
-  return DB_FAILED;
+  if (NeedCurrentDatabase(current_db_)) {
+    return DB_FAILED;
+  }
+  std::vector<TableInfo *> tables;
+  auto result = dbs_[current_db_]->catalog_mgr_->GetTables(tables);
+  if (result != DB_SUCCESS) {
+    return result;
+  }
+  for (auto table : tables) {
+    IndexInfo *index_info = nullptr;
+    if (dbs_[current_db_]->catalog_mgr_->GetIndex(table->GetTableName(), NodeValue(ast->child_), index_info) ==
+        DB_SUCCESS) {
+      return dbs_[current_db_]->catalog_mgr_->DropIndex(table->GetTableName(), NodeValue(ast->child_));
+    }
+  }
+  return DB_INDEX_NOT_FOUND;
 }
 
 dberr_t ExecuteEngine::ExecuteTrxBegin(pSyntaxNode ast, ExecuteContext *context) {
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteTrxBegin" << std::endl;
 #endif
-  return DB_FAILED;
+  std::cout << "Transaction begin is accepted as a no-op in this MiniSQL build." << std::endl;
+  return DB_SUCCESS;
 }
 
 dberr_t ExecuteEngine::ExecuteTrxCommit(pSyntaxNode ast, ExecuteContext *context) {
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteTrxCommit" << std::endl;
 #endif
-  return DB_FAILED;
+  std::cout << "Transaction commit is accepted as a no-op in this MiniSQL build." << std::endl;
+  return DB_SUCCESS;
 }
 
 dberr_t ExecuteEngine::ExecuteTrxRollback(pSyntaxNode ast, ExecuteContext *context) {
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteTrxRollback" << std::endl;
 #endif
-  return DB_FAILED;
+  std::cout << "Transaction rollback is accepted as a no-op in this MiniSQL build." << std::endl;
+  return DB_SUCCESS;
 }
 
 /**
@@ -422,7 +660,45 @@ dberr_t ExecuteEngine::ExecuteExecfile(pSyntaxNode ast, ExecuteContext *context)
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteExecfile" << std::endl;
 #endif
-  return DB_FAILED;
+  std::ifstream file(NodeValue(ast->child_));
+  if (!file.is_open()) {
+    std::cout << "Failed to open file: " << NodeValue(ast->child_) << std::endl;
+    return DB_FAILED;
+  }
+
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  std::string content = buffer.str();
+  std::string command;
+  dberr_t last_result = DB_SUCCESS;
+  for (char ch : content) {
+    command.push_back(ch);
+    if (ch != ';') {
+      continue;
+    }
+    YY_BUFFER_STATE bp = yy_scan_string(command.c_str());
+    if (bp == nullptr) {
+      return DB_FAILED;
+    }
+    MinisqlParserInit();
+    yy_switch_to_buffer(bp);
+    yyparse();
+    if (MinisqlParserGetError()) {
+      std::cout << MinisqlParserGetErrorMessage() << std::endl;
+      last_result = DB_FAILED;
+    } else {
+      last_result = Execute(MinisqlGetParserRootNode());
+      ExecuteInformation(last_result);
+    }
+    MinisqlParserFinish();
+    yy_delete_buffer(bp);
+    yylex_destroy();
+    command.clear();
+    if (last_result == DB_QUIT) {
+      return DB_QUIT;
+    }
+  }
+  return last_result;
 }
 
 /**
@@ -432,5 +708,5 @@ dberr_t ExecuteEngine::ExecuteQuit(pSyntaxNode ast, ExecuteContext *context) {
 #ifdef ENABLE_EXECUTE_DEBUG
   LOG(INFO) << "ExecuteQuit" << std::endl;
 #endif
- return DB_FAILED;
+  return DB_QUIT;
 }

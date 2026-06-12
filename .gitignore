@@ -2,6 +2,9 @@ bin/
 build/
 dbfiles/
 datas/
+databases/
+syntax_tree_*.txt
+tree_*.txt
 .vscode/
 .idea/
 cmake-build-debug/
