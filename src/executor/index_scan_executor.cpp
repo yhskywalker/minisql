@@ -79,7 +79,7 @@ vector<RowId> IndexScanExecutor::IndexScan(AbstractExpressionRef predicate) {
       return ret;
     }
     default:
-      break;
+      return {};
   }
 }
 
