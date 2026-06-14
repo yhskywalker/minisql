@@ -29,33 +29,30 @@ public:
     }
 
     void RedoPhase() {
-        for (const auto &entry : log_recs_) {
-            auto &log_rec = entry.second;
-            if (log_rec->lsn_ <= persist_lsn_) {
-                continue;
-            }
-            switch (log_rec->type_) {
+        for (auto &[lsn, log] : log_recs_) {
+            if (lsn <= persist_lsn_) continue;
+            switch (log->type_) {
                 case LogRecType::kBegin:
-                    active_txns_[log_rec->txn_id_] = log_rec->lsn_;
+                    active_txns_[log->txn_id_] = lsn;
                     break;
                 case LogRecType::kInsert:
-                    RedoLog(log_rec);
-                    active_txns_[log_rec->txn_id_] = log_rec->lsn_;
+                    data_[log->key_] = log->val_;
+                    active_txns_[log->txn_id_] = lsn;
                     break;
                 case LogRecType::kDelete:
-                    RedoLog(log_rec);
-                    active_txns_[log_rec->txn_id_] = log_rec->lsn_;
+                    data_.erase(log->key_);
+                    active_txns_[log->txn_id_] = lsn;
                     break;
                 case LogRecType::kUpdate:
-                    RedoLog(log_rec);
-                    active_txns_[log_rec->txn_id_] = log_rec->lsn_;
+                    data_[log->new_key_] = log->new_val_;
+                    active_txns_[log->txn_id_] = lsn;
                     break;
                 case LogRecType::kCommit:
-                    active_txns_.erase(log_rec->txn_id_);
+                    active_txns_.erase(log->txn_id_);
                     break;
                 case LogRecType::kAbort:
-                    UndoTxn(log_rec->prev_lsn_);
-                    active_txns_.erase(log_rec->txn_id_);
+                    UndoTxn(log->txn_id_);
+                    active_txns_.erase(log->txn_id_);
                     break;
                 default:
                     break;
@@ -64,10 +61,11 @@ public:
     }
 
     void UndoPhase() {
-        for (auto iter = active_txns_.begin(); iter != active_txns_.end(); ++iter) {
-            UndoTxn(iter->second);
+        auto txns = active_txns_;  // copy because UndoTxn modifies it
+        for (auto &[txn_id, lsn] : txns) {
+            UndoTxn(txn_id);
+            active_txns_.erase(txn_id);
         }
-        active_txns_.clear();
     }
 
     // used for test only
@@ -77,57 +75,31 @@ public:
     inline KvDatabase &GetDatabase() { return data_; }
 
 private:
-    void RedoLog(const LogRecPtr &log_rec) {
-        switch (log_rec->type_) {
-            case LogRecType::kInsert:
-                data_[log_rec->new_key_] = log_rec->new_val_;
-                break;
-            case LogRecType::kDelete:
-                data_.erase(log_rec->old_key_);
-                break;
-            case LogRecType::kUpdate:
-                if (log_rec->new_key_ != log_rec->old_key_) {
-                    data_.erase(log_rec->old_key_);
-                }
-                data_[log_rec->new_key_] = log_rec->new_val_;
-                break;
-            default:
-                break;
-        }
-    }
-
-    void UndoLog(const LogRecPtr &log_rec) {
-        switch (log_rec->type_) {
-            case LogRecType::kInsert:
-                data_.erase(log_rec->new_key_);
-                break;
-            case LogRecType::kDelete:
-                data_[log_rec->old_key_] = log_rec->old_val_;
-                break;
-            case LogRecType::kUpdate:
-                if (log_rec->new_key_ != log_rec->old_key_) {
-                    data_.erase(log_rec->new_key_);
-                }
-                data_[log_rec->old_key_] = log_rec->old_val_;
-                break;
-            default:
-                break;
-        }
-    }
-
-    void UndoTxn(lsn_t last_lsn) {
-        lsn_t next_lsn = last_lsn;
-        while (next_lsn != INVALID_LSN) {
-            auto log_iter = log_recs_.find(next_lsn);
-            if (log_iter == log_recs_.end()) {
-                break;
+    void UndoTxn(txn_id_t txn_id) {
+        // Iterate logs in reverse order, undo operations belonging to this txn
+        for (auto it = log_recs_.rbegin(); it != log_recs_.rend(); ++it) {
+            auto &log = it->second;
+            if (log->txn_id_ != txn_id) continue;
+            switch (log->type_) {
+                case LogRecType::kInsert:
+                    // Undo insert = delete
+                    data_.erase(log->key_);
+                    break;
+                case LogRecType::kDelete:
+                    // Undo delete = restore old value
+                    data_[log->key_] = log->val_;
+                    break;
+                case LogRecType::kUpdate:
+                    // Undo update = restore old value
+                    data_[log->old_key_] = log->old_val_;
+                    break;
+                default:
+                    break;
             }
-            auto &log_rec = log_iter->second;
-            UndoLog(log_rec);
-            next_lsn = log_rec->prev_lsn_;
         }
     }
 
+private:
     std::map<lsn_t, LogRecPtr> log_recs_{};
     lsn_t persist_lsn_{INVALID_LSN};
     ATT active_txns_{};

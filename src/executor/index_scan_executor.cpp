@@ -1,6 +1,5 @@
-#include "executor/executors/index_scan_executor.h"
-
 #include <algorithm>
+#include "executor/executors/index_scan_executor.h"
 
 class RowidCompare {
  public:
@@ -80,7 +79,7 @@ vector<RowId> IndexScanExecutor::IndexScan(AbstractExpressionRef predicate) {
       return ret;
     }
     default:
-      break;
+      return {};
   }
 }
 
