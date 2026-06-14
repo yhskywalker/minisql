@@ -7,6 +7,7 @@
 TableIterator::TableIterator(TableHeap *table_heap, RowId rid, Txn *txn)
     : table_heap_(table_heap), rid_(rid), txn_(txn) {
   if (rid.GetPageId() != INVALID_PAGE_ID && table_heap != nullptr) {
+    row_.destroy();
     row_.SetRowId(rid);
     table_heap_->GetTuple(&row_, txn_);
   }
@@ -45,30 +46,37 @@ TableIterator &TableIterator::operator=(const TableIterator &itr) noexcept {
 
 // ++iter
 TableIterator &TableIterator::operator++() {
+  if (table_heap_ == nullptr) {
+    return *this;
+  }
   auto page = reinterpret_cast<TablePage *>(table_heap_->buffer_pool_manager_->FetchPage(rid_.GetPageId()));
   RowId next_rid;
   if (page->GetNextTupleRid(rid_, &next_rid)) {
     rid_ = next_rid;
     row_.SetRowId(rid_);
+    row_.destroy();
     page->GetTuple(&row_, table_heap_->schema_, txn_, table_heap_->lock_manager_);
+    table_heap_->buffer_pool_manager_->UnpinPage(page->GetTablePageId(), false);
   } else {
     page_id_t next_page_id = page->GetNextPageId();
+    table_heap_->buffer_pool_manager_->UnpinPage(page->GetTablePageId(), false);
     while (next_page_id != INVALID_PAGE_ID) {
-      table_heap_->buffer_pool_manager_->UnpinPage(page->GetTablePageId(), false);
       page = reinterpret_cast<TablePage *>(table_heap_->buffer_pool_manager_->FetchPage(next_page_id));
       if (page->GetFirstTupleRid(&next_rid)) {
         rid_ = next_rid;
         row_.SetRowId(rid_);
+        row_.destroy();
         page->GetTuple(&row_, table_heap_->schema_, txn_, table_heap_->lock_manager_);
-        break;
+        table_heap_->buffer_pool_manager_->UnpinPage(page->GetTablePageId(), false);
+        return *this;
       }
       next_page_id = page->GetNextPageId();
+      table_heap_->buffer_pool_manager_->UnpinPage(page->GetTablePageId(), false);
     }
-    if (next_page_id == INVALID_PAGE_ID) {
-      rid_ = RowId(INVALID_PAGE_ID, 0);
-    }
+    // No more tuples found
+    rid_ = RowId(INVALID_PAGE_ID, 0);
+    table_heap_ = nullptr;
   }
-  table_heap_->buffer_pool_manager_->UnpinPage(page->GetTablePageId(), false);
   return *this;
 }
 

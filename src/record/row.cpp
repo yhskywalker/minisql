@@ -33,7 +33,7 @@ uint32_t Row::SerializeTo(char *buf, Schema *schema) const {
 
 uint32_t Row::DeserializeFrom(char *buf, Schema *schema) {
   ASSERT(schema != nullptr, "Invalid schema before serialize.");
-  ASSERT(fields_.empty(), "Non empty field in row.");
+  destroy();  // clear old fields before deserializing
   char *start = buf;
   // field count
   uint32_t field_count = MACH_READ_UINT32(buf);
