@@ -119,6 +119,7 @@ class TableHeap {
     auto table_page = reinterpret_cast<TablePage *>(page->GetData());
     table_page->Init(page_id, INVALID_PAGE_ID, log_manager_, txn);
     first_page_id_ = page_id;
+    last_page_id_ = page_id;
     buffer_pool_manager_->UnpinPage(page_id, true);
   };
 
@@ -126,6 +127,7 @@ class TableHeap {
                      LogManager *log_manager, LockManager *lock_manager)
       : buffer_pool_manager_(buffer_pool_manager),
         first_page_id_(first_page_id),
+        last_page_id_(first_page_id),
         schema_(schema),
         log_manager_(log_manager),
         lock_manager_(lock_manager) {}
@@ -133,6 +135,7 @@ class TableHeap {
  private:
   BufferPoolManager *buffer_pool_manager_;
   page_id_t first_page_id_;
+  page_id_t last_page_id_;  // hint: last page with free space, to speed up InsertTuple
   Schema *schema_;
   [[maybe_unused]] LogManager *log_manager_;
   [[maybe_unused]] LockManager *lock_manager_;

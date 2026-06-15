@@ -34,19 +34,27 @@ void TableHeap::DeleteTable(page_id_t page_id) {
 }
 
 bool TableHeap::InsertTuple(Row &row, Txn *txn) {
-  page_id_t cur_page_id = first_page_id_;
+  // Start from the last page hint to avoid scanning from the beginning
+  page_id_t cur_page_id = last_page_id_;
+  bool wrapped = false;
   while (cur_page_id != INVALID_PAGE_ID) {
     auto page = reinterpret_cast<TablePage *>(buffer_pool_manager_->FetchPage(cur_page_id));
     page->WLatch();
     if (page->InsertTuple(row, schema_, txn, lock_manager_, log_manager_)) {
       page->WUnlatch();
       buffer_pool_manager_->UnpinPage(cur_page_id, true);
+      last_page_id_ = cur_page_id;
       return true;
     }
     page->WUnlatch();
     page_id_t next_page_id = page->GetNextPageId();
     buffer_pool_manager_->UnpinPage(cur_page_id, false);
     cur_page_id = next_page_id;
+    // If we reach the end without finding space, wrap around to first_page_id_
+    if (cur_page_id == INVALID_PAGE_ID && !wrapped) {
+      cur_page_id = first_page_id_;
+      wrapped = true;
+    }
   }
   // All existing pages are full, create a new page
   page_id_t new_page_id;
@@ -56,8 +64,8 @@ bool TableHeap::InsertTuple(Row &row, Txn *txn) {
   }
   auto new_table_page = reinterpret_cast<TablePage *>(new_page->GetData());
   new_table_page->Init(new_page_id, INVALID_PAGE_ID, log_manager_, txn);
-  // Walk the page chain to find the last page and link the new page
-  cur_page_id = first_page_id_;
+  // Walk the page chain from last_page_id_ to find the tail page
+  cur_page_id = last_page_id_;
   while (true) {
     auto page = reinterpret_cast<TablePage *>(buffer_pool_manager_->FetchPage(cur_page_id));
     page_id_t next_id = page->GetNextPageId();
@@ -75,6 +83,7 @@ bool TableHeap::InsertTuple(Row &row, Txn *txn) {
     return false;
   }
   buffer_pool_manager_->UnpinPage(new_page_id, true);
+  last_page_id_ = new_page_id;
   return true;
 }
 
