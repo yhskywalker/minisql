@@ -514,73 +514,89 @@ Undo 针对 redo 后仍在 `active_txns_` 中的未完成事务：
 
 ## 10. 测试方案
 
-### 10.1 单模块测试
+### 10.1 运行测试
 
-本项目按模块保留独立测试目标：
-
-```powershell
-.\build-native\test\disk_manager_test.exe
-.\build-native\test\lru_replacer_test.exe
-.\build-native\test\buffer_pool_manager_test.exe
-.\build-native\test\tuple_test.exe
-.\build-native\test\table_heap_test.exe
-.\build-native\test\b_plus_tree_test.exe
-.\build-native\test\index_iterator_test.exe
-.\build-native\test\b_plus_tree_index_test.exe
-.\build-native\test\catalog_test.exe
-.\build-native\test\executor_test.exe
-.\build-native\test\lock_manager_test.exe
-.\build-native\test\recovery_manager_test.exe
+基本构建命令
+```bash
+mkdir build
+cd build
+cmake ..
+make -j
 ```
 
-各模块可独立验证，也可与前置模块联合验证。例如 Catalog 依赖 BufferPool 和 DiskManager，Executor 依赖 Catalog、TableHeap 和 Index。
+全部 30 个测试一次跑完：
 
-### 10.2 顺序回归命令
-
-Windows PowerShell 下需要先加入 DLL 路径：
-
-```powershell
-$env:PATH="C:\Users\Lenovo\Documents\New project\minisql-course-design\build-native\bin;C:\Users\Lenovo\Documents\New project\minisql-course-design\build-native\glog-build;C:\Users\Lenovo\Documents\New project\minisql-course-design\build-native\googletest-build;$env:PATH"
+```bash
+./test/minisql_test
 ```
 
-再顺序执行测试。注意不要并行运行共享 `databases/*.db` 的测试，Windows 下可能因为同名数据库文件或文件占用产生误报。
+### 10.2 单独运行模块
 
-### 10.3 已通过测试记录
+所有 13 个测试源文件统一编译为 `minisql_test`，通过 Google Test 过滤器指定模块：
 
-最近一次顺序回归已通过：
+```bash
+./test/minisql_test --gtest_filter='DiskManagerTest.*'       # disk_manager_test.cpp
+./test/minisql_test --gtest_filter='LRUReplacerTest.*'        # lru_replacer_test.cpp
+./test/minisql_test --gtest_filter='BufferPoolManagerTest.*'  # buffer_pool_manager_test.cpp
+./test/minisql_test --gtest_filter='TupleTest.*'              # tuple_test.cpp
+./test/minisql_test --gtest_filter='TableHeapTest.*'          # table_heap_test.cpp
+./test/minisql_test --gtest_filter='BPlusTreeTests.*'         # b_plus_tree_test.cpp, index_iterator_test.cpp, b_plus_tree_index_test.cpp
+./test/minisql_test --gtest_filter='PageTests.*'              # index_roots_page_test.cpp
+./test/minisql_test --gtest_filter='CatalogTest.*'            # catalog_test.cpp
+./test/minisql_test --gtest_filter='ExecutorTest.*'           # executor_test.cpp
+./test/minisql_test --gtest_filter='LockManagerTest.*'        # lock_manager_test.cpp
+./test/minisql_test --gtest_filter='RecoveryManagerTest.*'    # recovery_manager_test.cpp
+```
 
-- `disk_manager_test`：2 tests passed
-- `lru_replacer_test`：1 test passed
-- `buffer_pool_manager_test`：1 test passed
-- `tuple_test`：2 tests passed
-- `table_heap_test`：1 test passed
-- `b_plus_tree_test`：1 test passed
-- `index_iterator_test`：1 test passed
-- `b_plus_tree_index_test`：2 tests passed
-- `catalog_test`：3 tests passed
-- `executor_test`：4 tests passed
-- `lock_manager_test`：10 tests passed
-- `recovery_manager_test`：1 test passed
+### 10.3 测试结果
+
+最近一次回归全部通过：
+
+| 测试套件 | 测试数 | 结果 |
+| --- | --- | --- |
+| BufferPoolManagerTest | 1 | PASSED |
+| LRUReplacerTest | 1 | PASSED |
+| CatalogTest | 3 | PASSED |
+| LockManagerTest | 10 | PASSED |
+| ExecutorTest | 4 | PASSED |
+| BPlusTreeTests | 4 | PASSED |
+| PageTests | 1 | PASSED |
+| TupleTest | 2 | PASSED |
+| RecoveryManagerTest | 1 | PASSED |
+| DiskManagerTest | 2 | PASSED |
+| TableHeapTest | 1 | PASSED |
 
 ## 11. Git 开发时间线
 
 项目按模块提交，便于验收时以 Git log 说明开发过程：
 
-| 提交 | 说明 |
-| --- | --- |
-| `880d62e` | 导入 MiniSQL 课程框架 |
-| `951097a` | 支持 Windows MinGW 构建 |
-| `4c4f07d` | 实现 DiskManager、BitmapPage、LRU 和 BufferPoolManager |
-| `6defc20` | 实现记录层、TablePage、TableHeap 和迭代器 |
-| `78d77a5` | 实现 B+ 树索引、索引页和迭代器 |
-| `09bd73a` | 实现 Catalog 元数据管理和表/索引持久化 |
-| `dff095c` | 实现 SQL 命令执行、DDL、DML 调度和 shell 命令 |
-| `11c702e` | 实现 LockManager bonus |
-| `c1cbb14` | 实现 RecoveryManager bonus |
+| 提交 | 日期 | 说明 |
+| --- | --- | --- |
+| `880d62e` | 2026-06-11 | 导入 MiniSQL 课程框架 |
+| `951097a` | 2026-06-11 | 清理编译选项 |
+| `4c4f07d` | 2026-06-11 | 实现 DiskManager、LRU 和 BufferPoolManager |
+| `6defc20` | 2026-06-11 | 实现记录层、TablePage、TableHeap 和迭代器 |
+| `78d77a5` | 2026-06-11 | 实现 B+ 树索引和迭代器 |
+| `09bd73a` | 2026-06-11 | 实现 Catalog 元数据管理和表/索引持久化 |
+| `dff095c` | 2026-06-12 | 实现 SQL 命令执行、DDL、DML 和 shell |
+| `11c702e` | 2026-06-12 | 实现 LockManager bonus |
+| `c1cbb14` | 2026-06-12 | 实现 RecoveryManager bonus |
+| `137ff8f` | 2026-06-12 | 课程设计文档 |
+| `c17862a` | 2026-06-08 | 项目初始化（自主） |
+| `b382bb1` | 2026-06-08 | 完善 row.cpp（自主） |
+| `a3c777e` | 2026-06-09 | 完善 column.cpp（自主） |
+| `80c1064` | 2026-06-09 | 完善 schema.cpp（自主） |
+| `8e1d437` | 2026-06-13 | 完成 TableHeap、TableIterator（自主） |
+| `2afc5dc` | 2026-06-13 | index 初始化（自主） |
+| `3c658ba` | 2026-06-13 | catalog manager（自主） |
+| `1e220af` | 2026-06-13 | recovery manager（自主） |
+| `432982a` | 2026-06-14 | 合并全部模块 |
+| `aac2752` | 2026-06-14 | 修复 row.cpp、table_iterator.cpp |
+| `a51fd29` | 2026-06-15 | bonus: last_page_id 加速插入 |
 
 查看命令：
 
-```powershell
+```bash
 git log --oneline --reverse
 ```
 
@@ -589,4 +605,4 @@ git log --oneline --reverse
 - B+ 树删除实现通过课程公共测试，但未完整实现内部节点低水位后的合并/重分配。
 - SQL 层事务命令已接收，但未将 LockManager 和 RecoveryManager 深度接入每条 SQL DML；并发和恢复以独立 bonus 模块测试验证。
 - RecoveryManager 是课程测试用简化内存 KV 恢复模型，不是完整磁盘 WAL/ARIES 实现。
-- Windows 下测试生成的 `.db`、`syntax_tree_*.txt`、`tree_*.txt` 为运行产物，已通过 `.gitignore` 排除。
+- 测试生成的 `.db`、`syntax_tree_*.txt`、`tree_*.txt` 为运行产物，已通过 `.gitignore` 排除。
