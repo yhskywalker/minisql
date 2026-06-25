@@ -20,6 +20,7 @@ make -j
 ```bash
 ./test/minisql_test
 ```
+- 当前测试共覆盖 34 个测试用例、12 个测试套件，其中包括新增的 Clock Replacer 4 个专项测试。
 
 ## 运行主程序
 
@@ -27,15 +28,15 @@ make -j
 ./bin/main
 ~~~
 
+
 ## 功能范围
 
 - DiskManager：页分配、释放、读写和 bitmap 管理。
-- BufferPoolManager：页缓存、pin/unpin、脏页刷盘和 LRU 替换。
+- BufferPoolManager：页缓存、pin/unpin、脏页刷盘和默认 LRU 替换。
+- Clock Replacer Bonus：额外实现 Clock 页面替换算法，并覆盖基本淘汰、二次机会、Pin 移除候选页和容量限制测试。
 - Record Manager：Field、Column、Schema、Row、TablePage、TableHeap 和迭代器。
-- Index Manager：GenericKey、B+ 树、叶子页/内部页、范围迭代器和 B+TreeIndex。
-- Catalog：表和索引元数据持久化，支持重启加载。
-- Executor：支持数据库/表/索引命令，支持 `select`、`insert`、`delete`、`update`。
-- Bonus：记录级 S/X 锁、锁升级、2PL、死锁检测；简化日志恢复 redo/undo。
+...
+- Bonus：Clock Replacer；TableHeap 的 `last_page_id_` 插入加速；记录级 S/X 锁、锁升级、2PL、死锁检测；简化日志恢复 redo/undo。
 
 ## Git 时间线
 
@@ -64,6 +65,9 @@ a3c777e (2026-06-09) 完善 column.cpp
 432982a (2026-06-14) merge: combine 全部模块
 aac2752 (2026-06-14) fix bug: row.cpp; table_iterator.cpp
 a51fd29 (2026-06-15) bonus: add last_page_id to accelerate row insertion
+25ee617 (2026-06-25) feat(buffer): add Clock replacer and tests
+9528f71 (2026-06-25) merge: merge Clock replacer bonus into main
+
 ```
 
 查看完整提交历史，以本地 Git log 为准：
