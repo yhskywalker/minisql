@@ -2,7 +2,7 @@
 
 本仓库完成 MiniSQL C++ 内核课程设计，包含存储管理、缓冲池、记录管理、B+ 树索引、Catalog、SQL 执行，以及 Clock Replacer、LockManager 和 RecoveryManager bonus。
 
-详细设计文档见 [doc/detailed-design.md](doc/detailed-design.md)。
+详细设计文档见 [detailed-design.md](detailed-design.md)。
 
 ## 构建
 
