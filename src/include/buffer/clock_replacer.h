@@ -1,21 +1,15 @@
 #ifndef MINISQL_CLOCK_REPLACER_H
 #define MINISQL_CLOCK_REPLACER_H
 
-#include <algorithm>
 #include <list>
-#include <map>
 #include <mutex>
-#include <queue>
-#include <unordered_set>
-#include <vector>
+#include <unordered_map>
 
 #include "buffer/replacer.h"
 #include "common/config.h"
 
-using namespace std;
-
 /**
- * CLOCKReplacer implements the clock replacement.
+ * CLOCKReplacer implements the clock replacement policy.
  */
 class CLOCKReplacer : public Replacer {
  public:
@@ -39,9 +33,14 @@ class CLOCKReplacer : public Replacer {
   size_t Size() override;
 
  private:
-  size_t capacity;
-  list<frame_id_t> clock_list;               // replacer中可以被替换的数据页
-  map<frame_id_t, frame_id_t> clock_status;  // 数据页的存储状态
+  using ClockList = std::list<frame_id_t>;
+
+  size_t capacity_;
+  ClockList clock_list_;
+  ClockList::iterator clock_hand_;
+  std::unordered_map<frame_id_t, ClockList::iterator> frame_table_;
+  std::unordered_map<frame_id_t, bool> reference_bits_;
+  std::mutex latch_;
 };
 
 #endif  // MINISQL_CLOCK_REPLACER_H
